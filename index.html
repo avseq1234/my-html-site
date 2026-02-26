@@ -1,0 +1,739 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Local Transcribe (YouTube + 本地影片)</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans TC", sans-serif; margin: 16px; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } }
+    input[type="text"] { width: min(820px, 100%); padding: 8px 10px; border-radius: 8px; border: 1px solid #ccc; }
+    input[type="range"] { width: 100%; }
+    button { padding: 8px 12px; border-radius: 8px; border: 1px solid #ccc; background: #f7f7f7; cursor: pointer; }
+    button:hover { background: #eee; }
+    textarea { width: 100%; height: 55vh; padding: 12px; border-radius: 10px; border: 1px solid #ccc; font-size: 14px; line-height: 1.5; }
+    .hint { color: #555; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+    .playerBox { width: 100%; aspect-ratio: 16 / 9; background: #111; border-radius: 10px; overflow: hidden; }
+    .hidden { display: none; }
+    .status { font-size: 13px; color: #333; }
+    .kbd { border: 1px solid #ccc; border-bottom-width: 2px; border-radius: 6px; padding: 1px 6px; background: #fafafa; }
+    .topTimeline { margin-top: 10px; padding-top: 10px; border-top: 1px dashed #ddd; }
+    .pill { font-size: 12px; padding: 2px 8px; border: 1px solid #ddd; border-radius: 999px; background: #fafafa; }
+    .small { font-size: 12px; }
+    .subtle { color:#777; }
+    .warn { color:#8a4b00; }
+    .err { color:#b00020; }
+    .ok { color:#0b6b0b; }
+  </style>
+</head>
+
+<body>
+  <h2>Local Transcribe（YouTube + 本地影片）</h2>
+
+  <!-- TOP CARD -->
+  <div class="card">
+    <div class="row" style="margin-bottom:10px;">
+      <strong>來源：</strong>
+      <label><input type="radio" name="src" value="youtube" checked> YouTube</label>
+      <label><input type="radio" name="src" value="local"> 本地影片</label>
+      <span id="localBadge" class="pill hidden">Local</span>
+    </div>
+
+    <!-- YouTube controls -->
+    <div id="youtubeControls" class="row" style="margin-bottom:10px;">
+      <input id="ytInput" type="text" placeholder="貼 YouTube 連結或影片 ID，例如 https://www.youtube.com/watch?v=xxxx" />
+      <button id="loadYtBtn">載入</button>
+    </div>
+
+    <!-- Local controls -->
+    <div id="localControls" class="hidden" style="margin-bottom:10px;">
+      <div class="row" style="margin-bottom:8px;">
+        <strong>Choose File：</strong>
+        <input id="fileInput" type="file" accept="video/*,audio/*" />
+        <button id="unloadLocalBtn" title="卸載本地檔">卸載</button>
+        <span class="small subtle">（refresh 後需再選一次，瀏覽器限制）</span>
+      </div>
+
+      <div class="row">
+        <strong>Local URL：</strong>
+        <input id="localUrlInput" type="text" placeholder="例如 videos/中文 檔名.mp4（與 index.html 同層）" />
+        <button id="loadLocalUrlBtn">載入 URL</button>
+        <button id="useLastLocalBtn">Use last</button>
+        <span class="small subtle">（URL 模式可 refresh 自動載入）</span>
+      </div>
+
+      <div class="hint warn" style="margin-top:6px;">
+        Local URL 模式必須用 <span class="mono">http://localhost:8000</span> 這種方式跑（不要用 file:// 直接開），否則 videos/ 可能無法載入或無法 seek。
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="status">
+        目前控制：<span id="activeLabel" class="mono">YouTube</span>｜
+        <span id="timeLabel" class="mono">00:00.0</span>
+        <span id="nowPlaying" class="mono small" style="margin-left:10px;"></span>
+      </div>
+    </div>
+
+    <div class="hint" style="margin-top:10px;">
+      快捷鍵：
+      <span class="kbd">Esc</span>（播放中：退 1 秒並暫停；暫停中：繼續播放）｜
+      <span class="kbd">Option(Alt)+←</span> 退 5 秒｜
+      <span class="kbd">Option(Alt)+→</span> 進 5 秒
+    </div>
+
+    <!-- Progress bar in highlighted area -->
+    <div class="topTimeline">
+      <input id="timeline" type="range" min="0" max="0" step="0.05" value="0" disabled />
+      <div class="row" style="justify-content:space-between; margin-top:6px;">
+        <span id="curTime" class="mono">00:00.0</span>
+        <span id="durTime" class="mono">00:00.0</span>
+      </div>
+      <div id="timelineMsg" class="hint"></div>
+    </div>
+
+    <div id="errorBox" class="hint err" style="margin-top:8px;"></div>
+    <div id="okBox" class="hint ok" style="margin-top:6px;"></div>
+  </div>
+
+  <!-- MAIN GRID -->
+  <div class="grid" style="margin-top:12px;">
+    <div class="card">
+      <h3 style="margin-top:0;">播放器</h3>
+
+      <div id="ytWrap" class="playerBox">
+        <div id="ytPlayer"></div>
+      </div>
+
+      <div id="localWrap" class="playerBox hidden">
+        <video id="localVideo" preload="metadata" controls style="width:100%;height:100%;"></video>
+      </div>
+
+      <div class="hint" style="margin-top:10px;">
+        建議用本地 server 跑：<span class="mono">python3 -m http.server 8000</span>（在 index.html 同層資料夾執行）
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0;">逐字稿</h3>
+      <textarea id="notes" placeholder="在這裡打逐字稿…"></textarea>
+    </div>
+  </div>
+
+  <script>
+    // ---------- Utilities ----------
+    function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
+    function fmtTime(sec) {
+      if (!isFinite(sec)) return "00:00.0";
+      const s = Math.max(0, sec);
+      const m = Math.floor(s / 60);
+      const r = s - m * 60;
+      const mm = String(m).padStart(2, "0");
+      const ss = String(Math.floor(r)).padStart(2, "0");
+      const t = Math.floor((r - Math.floor(r)) * 10);
+      return `${mm}:${ss}.${t}`;
+    }
+    function parseYouTubeId(input) {
+      const s = (input || "").trim();
+      if (!s) return "";
+      if (/^[a-zA-Z0-9_-]{8,20}$/.test(s) && !s.includes("http")) return s;
+      try {
+        const url = new URL(s);
+        if (url.hostname.includes("youtu.be")) return url.pathname.split("/").filter(Boolean)[0] || "";
+        const v = url.searchParams.get("v");
+        if (v) return v;
+        const parts = url.pathname.split("/").filter(Boolean);
+        const embedIdx = parts.indexOf("embed");
+        if (embedIdx >= 0 && parts[embedIdx + 1]) return parts[embedIdx + 1];
+        const shortsIdx = parts.indexOf("shorts");
+        if (shortsIdx >= 0 && parts[shortsIdx + 1]) return parts[shortsIdx + 1];
+      } catch {}
+      return "";
+    }
+
+    // ---------- Storage keys ----------
+    const LS = {
+      active: "lt_active",
+      ytId: "lt_yt_id",
+      time: "lt_time",
+      paused: "lt_paused",
+      notes: "lt_notes",
+      localLastUrlRaw: "lt_local_url_raw", // raw string as user typed (nice UI)
+      localFileTimes: "lt_local_file_times" // JSON map fingerprint -> time
+    };
+
+    // URL time key uses encoded absolute URL (important for 中文/空白)
+    function urlTimeKey(encodedAbsUrl) {
+      return `lt_local_url_time__${encodedAbsUrl}`;
+    }
+
+    // ---------- DOM ----------
+    const activeLabel = document.getElementById("activeLabel");
+    const timeLabel = document.getElementById("timeLabel");
+    const nowPlaying = document.getElementById("nowPlaying");
+
+    const youtubeControls = document.getElementById("youtubeControls");
+    const localControls = document.getElementById("localControls");
+    const localBadge = document.getElementById("localBadge");
+
+    const ytWrap = document.getElementById("ytWrap");
+    const localWrap = document.getElementById("localWrap");
+
+    const ytInput = document.getElementById("ytInput");
+    const loadYtBtn = document.getElementById("loadYtBtn");
+
+    const fileInput = document.getElementById("fileInput");
+    const unloadLocalBtn = document.getElementById("unloadLocalBtn");
+
+    const localUrlInput = document.getElementById("localUrlInput");
+    const loadLocalUrlBtn = document.getElementById("loadLocalUrlBtn");
+    const useLastLocalBtn = document.getElementById("useLastLocalBtn");
+
+    const localVideo = document.getElementById("localVideo");
+
+    const timeline = document.getElementById("timeline");
+    const curTimeEl = document.getElementById("curTime");
+    const durTimeEl = document.getElementById("durTime");
+    const timelineMsg = document.getElementById("timelineMsg");
+    const errorBox = document.getElementById("errorBox");
+    const okBox = document.getElementById("okBox");
+
+    const notesEl = document.getElementById("notes");
+
+    // ---------- State ----------
+    let active = "youtube";
+    let ytPlayer = null;
+    let ytReady = false;
+
+    let isScrubbing = false;
+    let wasPlayingBeforeScrub = false;
+    let lastKnownDuration = 0;
+
+    let pendingLocalSeek = null;
+
+    // for choose-file resume
+    let currentLocalFingerprint = null;
+
+    // for local URL mode: the encoded absolute URL currently loaded
+    let currentLocalUrlEncoded = null;
+
+    // ---------- Toggle source ----------
+    document.querySelectorAll('input[name="src"]').forEach(r => {
+      r.addEventListener("change", () => setActive(document.querySelector('input[name="src"]:checked').value));
+    });
+
+    function setActive(which) {
+      active = which;
+      activeLabel.textContent = which === "youtube" ? "YouTube" : "Local";
+      youtubeControls.classList.toggle("hidden", which !== "youtube");
+      localControls.classList.toggle("hidden", which !== "local");
+      ytWrap.classList.toggle("hidden", which !== "youtube");
+      localWrap.classList.toggle("hidden", which !== "local");
+      localBadge.classList.toggle("hidden", which !== "local");
+
+      try { localStorage.setItem(LS.active, which); } catch {}
+
+      // reset UI state
+      lastKnownDuration = 0;
+      syncTimelineBounds(true);
+      timelineMsg.textContent = "";
+      errorBox.textContent = "";
+      okBox.textContent = "";
+      updateNowPlaying();
+    }
+
+    // ---------- YouTube ----------
+    loadYtBtn.addEventListener("click", () => {
+      const id = parseYouTubeId(ytInput.value);
+      if (!id) return alert("找不到 YouTube 影片 ID，請貼完整連結或直接貼 ID。");
+      if (!ytReady) return alert("YouTube API 還在初始化，請稍等一下再按。");
+      ytPlayer.loadVideoById(id);
+      setActive("youtube");
+      document.querySelector('input[name="src"][value="youtube"]').checked = true;
+    });
+
+    (function loadYT() {
+      const tag = document.createElement("script");
+      tag.src = "https://www.youtube.com/iframe_api";
+      document.head.appendChild(tag);
+    })();
+
+    window.onYouTubeIframeAPIReady = function () {
+      ytPlayer = new YT.Player("ytPlayer", {
+        height: "100%",
+        width: "100%",
+        videoId: "",
+        playerVars: { playsinline: 1, rel: 0 },
+        events: { onReady: () => { ytReady = true; } }
+      });
+    };
+
+    function ytIsPlaying() {
+      if (!ytPlayer || !ytReady) return false;
+      return ytPlayer.getPlayerState() === 1;
+    }
+    function ytIsPaused() {
+      if (!ytPlayer || !ytReady) return true;
+      const st = ytPlayer.getPlayerState();
+      return st === 2 || st === 5 || st === -1;
+    }
+
+    // ---------- Unified controls ----------
+    function getCurrentTime() {
+      if (active === "local") return localVideo.currentTime || 0;
+      if (ytPlayer && ytReady) return ytPlayer.getCurrentTime() || 0;
+      return 0;
+    }
+    function getDuration() {
+      if (active === "local") return localVideo.duration || 0;
+      if (ytPlayer && ytReady) return ytPlayer.getDuration() || 0;
+      return 0;
+    }
+    function seekTo(t) {
+      t = Math.max(0, t);
+      if (active === "local") localVideo.currentTime = t;
+      else if (ytPlayer && ytReady) ytPlayer.seekTo(t, true);
+    }
+    function play() {
+      if (active === "local") localVideo.play();
+      else if (ytPlayer && ytReady) ytPlayer.playVideo();
+    }
+    function pause() {
+      if (active === "local") localVideo.pause();
+      else if (ytPlayer && ytReady) ytPlayer.pauseVideo();
+    }
+    function isPlaying() {
+      if (active === "local") return !localVideo.paused;
+      return ytIsPlaying();
+    }
+    function isPaused() {
+      if (active === "local") return localVideo.paused;
+      return ytIsPaused();
+    }
+
+    // ---------- Keyboard ----------
+    function handleEsc() {
+      if (isPlaying()) { seekTo(getCurrentTime() - 1); pause(); }
+      else { play(); }
+    }
+    function handleAltArrow(delta) { seekTo(getCurrentTime() + delta); }
+
+    window.addEventListener("keydown", (e) => {
+      if (e.repeat) return;
+      if (e.key === "Escape") { e.preventDefault(); handleEsc(); return; }
+      if (e.altKey && e.key === "ArrowRight") { e.preventDefault(); handleAltArrow(+5); return; }
+      if (e.altKey && e.key === "ArrowLeft") { e.preventDefault(); handleAltArrow(-5); return; }
+    }, { capture: true });
+
+    // ---------- Progress bar: scrub + seek ----------
+    function beginScrub() {
+      if (isScrubbing) return;
+      isScrubbing = true;
+      wasPlayingBeforeScrub = isPlaying();
+      if (wasPlayingBeforeScrub) pause();
+    }
+    function endScrub() {
+      if (!isScrubbing) return;
+      isScrubbing = false;
+      if (wasPlayingBeforeScrub) play();
+      wasPlayingBeforeScrub = false;
+    }
+
+    // Global end events (in case mouseup happens outside the slider)
+    ["pointerup","mouseup","touchend","touchcancel"].forEach(ev => {
+      window.addEventListener(ev, endScrub, { capture: true });
+    });
+
+    // Start scrub events
+    ["pointerdown","mousedown","touchstart"].forEach(ev => {
+      timeline.addEventListener(ev, beginScrub, { passive: true });
+    });
+
+    // While dragging: seek immediately
+    timeline.addEventListener("input", () => {
+      const v = Number(timeline.value || "0");
+      curTimeEl.textContent = fmtTime(v);
+      seekTo(v);
+    });
+
+    // On release/click: seek again + end scrub
+    timeline.addEventListener("change", () => {
+      const v = Number(timeline.value || "0");
+      seekTo(v);
+      endScrub();
+    });
+
+    function syncTimelineBounds(forceDisable=false) {
+      const d = getDuration();
+      if (isFinite(d) && d > 0 && d !== Infinity) lastKnownDuration = d;
+
+      const rawDur = getDuration();
+      const seekable = isFinite(rawDur) && rawDur > 0 && rawDur !== Infinity;
+
+      const dur = lastKnownDuration || 0;
+      timeline.step = "0.05";
+      timeline.min = "0";
+      timeline.max = String(dur);
+
+      const enable = !forceDisable && dur > 0 && seekable;
+      timeline.disabled = !enable;
+
+      durTimeEl.textContent = fmtTime(dur);
+
+      if (!enable) {
+        // don't force reset current time label; just show message
+        timelineMsg.textContent = seekable ? "" : "⚠️ 目前無法取得正確 duration（常見：mp4 沒 faststart），所以 URL 模式的進度條可能無法拖曳。";
+      } else {
+        timelineMsg.textContent = "";
+        if (!isScrubbing) {
+          const t = getCurrentTime();
+          timeline.value = String(clamp(t, 0, dur));
+          curTimeEl.textContent = fmtTime(t);
+        }
+      }
+    }
+
+    // ---------- Persistence ----------
+    function persistPlaybackState(time, paused) {
+      try {
+        localStorage.setItem(LS.active, active);
+        localStorage.setItem(LS.time, String(time || 0));
+        localStorage.setItem(LS.paused, paused ? "1" : "0");
+
+        if (active === "youtube") {
+          if (ytPlayer && ytReady) {
+            const data = ytPlayer.getVideoData && ytPlayer.getVideoData();
+            if (data && data.video_id) localStorage.setItem(LS.ytId, data.video_id);
+          }
+        }
+      } catch {}
+    }
+
+    // ---------- Notes persistence ----------
+    notesEl.addEventListener("input", () => {
+      try { localStorage.setItem(LS.notes, notesEl.value); } catch {}
+    });
+
+    // ---------- Choose-file resume (per file fingerprint) ----------
+    function fileFingerprint(file) {
+      return `${file.name}__${file.size}__${file.lastModified}`;
+    }
+    function getLocalFileTimesMap() {
+      try {
+        const raw = localStorage.getItem(LS.localFileTimes);
+        if (!raw) return {};
+        const obj = JSON.parse(raw);
+        return (obj && typeof obj === "object") ? obj : {};
+      } catch { return {}; }
+    }
+    function setLocalFileTimesMap(map) {
+      try { localStorage.setItem(LS.localFileTimes, JSON.stringify(map)); } catch {}
+    }
+    function getLocalFileTime(fp) {
+      if (!fp) return null;
+      const map = getLocalFileTimesMap();
+      const t = Number(map[fp]);
+      return (isFinite(t) && t > 0) ? t : null;
+    }
+    function setLocalFileTime(fp, t) {
+      if (!fp) return;
+      const map = getLocalFileTimesMap();
+      map[fp] = Number(t || 0);
+      setLocalFileTimesMap(map);
+    }
+
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) return;
+
+      okBox.textContent = "";
+      errorBox.textContent = "";
+      timelineMsg.textContent = "";
+
+      currentLocalFingerprint = fileFingerprint(file);
+      currentLocalUrlEncoded = null;
+
+      pendingLocalSeek = getLocalFileTime(currentLocalFingerprint);
+
+      const blobUrl = URL.createObjectURL(file);
+      localVideo.src = blobUrl;
+      localVideo.load();
+
+      setActive("local");
+      document.querySelector('input[name="src"][value="local"]').checked = true;
+      updateNowPlaying(`LocalFile: ${file.name}`);
+    });
+
+    // ---------- Local URL mode (handles 中文/空白 by encoding) ----------
+    function normalizeLocalUrlToEncodedAbs(u) {
+      const s = (u || "").trim();
+      if (!s) return "";
+      try {
+        // new URL() will produce an encoded absolute URL (important!)
+        return new URL(s, window.location.href).href;
+      } catch {
+        return "";
+      }
+    }
+
+    async function checkUrlReachable(encodedAbsUrl) {
+      try {
+        const res = await fetch(encodedAbsUrl, { method: "HEAD", cache: "no-store" });
+        if (res.status === 405) {
+          const res2 = await fetch(encodedAbsUrl, { method: "GET", cache: "no-store" });
+          return res2.ok;
+        }
+        return res.ok;
+      } catch {
+        return false;
+      }
+    }
+
+    function getLocalUrlTime(encodedAbsUrl) {
+      try {
+        const t = Number(localStorage.getItem(urlTimeKey(encodedAbsUrl)) || "0");
+        return (isFinite(t) && t > 0) ? t : null;
+      } catch { return null; }
+    }
+    function setLocalUrlTime(encodedAbsUrl, t) {
+      try { localStorage.setItem(urlTimeKey(encodedAbsUrl), String(Number(t || 0))); } catch {}
+    }
+
+    async function loadLocalUrl(rawUrl, { autoResume=true } = {}) {
+      const raw = (rawUrl || "").trim();
+      if (!raw) return alert("請輸入 URL，例如 videos/a.mp4");
+
+      okBox.textContent = "";
+      errorBox.textContent = "";
+      timelineMsg.textContent = "";
+
+      if (location.protocol === "file:") {
+        errorBox.textContent =
+          "你目前是用 file:// 開啟頁面。Local URL 模式很可能無法正常載入 videos/。請用 python3 -m http.server 後從 http://localhost 開啟。";
+        return;
+      }
+
+      const encoded = normalizeLocalUrlToEncodedAbs(raw);
+      if (!encoded) return alert("URL 解析失敗，請檢查輸入內容。");
+
+      // Save raw (nice UI) so Use last works, but load by encoded URL
+      try { localStorage.setItem(LS.localLastUrlRaw, raw); } catch {}
+      localUrlInput.value = raw;
+
+      const ok = await checkUrlReachable(encoded);
+      if (!ok) {
+        errorBox.textContent =
+          `無法載入：${raw}\n` +
+          `我實際請求的是（已編碼）：${encoded}\n\n` +
+          `請確認：\n` +
+          `1) 你在 index.html 同層執行 python3 -m http.server 8000\n` +
+          `2) videos/ 資料夾存在且檔名完全一致（含大小寫）\n` +
+          `3) 你開的是 http://localhost:8000（不是 file://）`;
+        return;
+      }
+
+      // URL mode: clear choose-file fingerprint
+      currentLocalFingerprint = null;
+      currentLocalUrlEncoded = encoded;
+
+      pendingLocalSeek = autoResume ? getLocalUrlTime(encoded) : null;
+
+      localVideo.src = encoded;
+      localVideo.load();
+
+      setActive("local");
+      document.querySelector('input[name="src"][value="local"]').checked = true;
+      updateNowPlaying(`LocalURL: ${raw}`);
+      okBox.textContent = `已載入（URL）：${raw}`;
+    }
+
+    loadLocalUrlBtn.addEventListener("click", async () => {
+      await loadLocalUrl(localUrlInput.value, { autoResume: true });
+    });
+
+    useLastLocalBtn.addEventListener("click", async () => {
+      let lastRaw = "";
+      try { lastRaw = localStorage.getItem(LS.localLastUrlRaw) || ""; } catch {}
+      if (!lastRaw) return alert("沒有記錄到上次的 Local URL。");
+      await loadLocalUrl(lastRaw, { autoResume: true });
+    });
+
+    unloadLocalBtn.addEventListener("click", () => {
+      okBox.textContent = "";
+      errorBox.textContent = "";
+      timelineMsg.textContent = "";
+
+      try { if (localVideo.src && localVideo.src.startsWith("blob:")) URL.revokeObjectURL(localVideo.src); } catch {}
+
+      localVideo.pause();
+      localVideo.removeAttribute("src");
+      localVideo.load();
+
+      pendingLocalSeek = null;
+      currentLocalFingerprint = null;
+      currentLocalUrlEncoded = null;
+
+      updateNowPlaying("");
+      lastKnownDuration = 0;
+      syncTimelineBounds(true);
+    });
+
+    // Resume local after metadata ready
+    function resumeLocalIfNeeded() {
+      if (pendingLocalSeek == null) return;
+      const dur = localVideo.duration;
+      if (!isFinite(dur) || dur <= 0 || dur === Infinity) return;
+
+      const target = clamp(pendingLocalSeek, 0, Math.max(0, dur - 0.25));
+      setTimeout(() => {
+        localVideo.currentTime = target;
+        pendingLocalSeek = null;
+      }, 50);
+    }
+    localVideo.addEventListener("loadedmetadata", resumeLocalIfNeeded);
+    localVideo.addEventListener("canplay", resumeLocalIfNeeded);
+
+    // Show local media error
+    localVideo.addEventListener("error", () => {
+      const err = localVideo.error;
+      errorBox.textContent = `影片載入錯誤（Local）: code=${err ? err.code : "unknown"}。常見原因：路徑 404、codec 不支援、或用 file:// 開啟。`;
+    });
+
+    // Persist local time
+    localVideo.addEventListener("timeupdate", () => {
+      const t = localVideo.currentTime || 0;
+
+      // save per-file or per-url
+      if (currentLocalFingerprint) {
+        setLocalFileTime(currentLocalFingerprint, t);
+      } else if (currentLocalUrlEncoded) {
+        setLocalUrlTime(currentLocalUrlEncoded, t);
+      } else {
+        // fallback: currentSrc (already encoded)
+        const u = localVideo.currentSrc || "";
+        if (u) setLocalUrlTime(u, t);
+      }
+    });
+
+    // ---------- Now playing label ----------
+    function updateNowPlaying(forceText) {
+      if (typeof forceText === "string") {
+        nowPlaying.textContent = forceText ? forceText : "";
+        return;
+      }
+      if (active === "youtube") {
+        let id = "";
+        try { id = localStorage.getItem(LS.ytId) || ""; } catch {}
+        nowPlaying.textContent = id ? `YT: ${id}` : "";
+      } else {
+        const src = localVideo.currentSrc || localVideo.getAttribute("src") || "";
+        nowPlaying.textContent = src ? `Local: ${src}` : "";
+      }
+    }
+
+    // ---------- UI tickers ----------
+    (function tickLabel() {
+      timeLabel.textContent = fmtTime(getCurrentTime());
+      requestAnimationFrame(tickLabel);
+    })();
+
+    (function tickUI(){
+      function loop(){
+        syncTimelineBounds(false);
+
+        const d = getDuration();
+        if (isFinite(d) && d > 0 && d !== Infinity) lastKnownDuration = d;
+        const dur = lastKnownDuration || 0;
+
+        if (dur > 0) {
+          const t = getCurrentTime();
+          if (!isScrubbing && !timeline.disabled) {
+            curTimeEl.textContent = fmtTime(t);
+            timeline.value = String(clamp(t, 0, dur));
+          }
+          durTimeEl.textContent = fmtTime(dur);
+          persistPlaybackState(t, isPaused());
+        }
+
+        requestAnimationFrame(loop);
+      }
+      loop();
+    })();
+
+    // ---------- Restore on load ----------
+    function restoreOnLoad() {
+      // notes
+      try {
+        const savedNotes = localStorage.getItem(LS.notes);
+        if (savedNotes != null) notesEl.value = savedNotes;
+      } catch {}
+
+      // show last local raw url in input (so Use last is visible)
+      try {
+        const lastRaw = localStorage.getItem(LS.localLastUrlRaw) || "";
+        if (lastRaw) localUrlInput.value = lastRaw;
+      } catch {}
+
+      // active
+      let savedActive = "youtube";
+      try {
+        const a = localStorage.getItem(LS.active);
+        if (a === "local" || a === "youtube") savedActive = a;
+      } catch {}
+
+      // youtube restore
+      let savedYtId = "";
+      let savedTime = 0;
+      let savedPaused = true;
+      try {
+        savedYtId = localStorage.getItem(LS.ytId) || "";
+        savedTime = Number(localStorage.getItem(LS.time) || "0") || 0;
+        savedPaused = (localStorage.getItem(LS.paused) || "1") === "1";
+      } catch {}
+
+      if (savedActive === "youtube") {
+        setActive("youtube");
+        document.querySelector('input[name="src"][value="youtube"]').checked = true;
+
+        const tryLoad = () => {
+          if (!ytReady) return false;
+          if (!savedYtId) return true;
+
+          ytPlayer.loadVideoById(savedYtId);
+          setTimeout(() => {
+            seekTo(savedTime);
+            if (savedPaused) pause();
+            else play();
+          }, 700);
+          return true;
+        };
+
+        let tries = 0;
+        const timer = setInterval(() => {
+          tries += 1;
+          if (tryLoad() || tries > 80) clearInterval(timer);
+        }, 100);
+      } else {
+        // local: auto-load ONLY if URL mode had a saved raw URL
+        setActive("local");
+        document.querySelector('input[name="src"][value="local"]').checked = true;
+
+        let lastRaw = "";
+        try { lastRaw = localStorage.getItem(LS.localLastUrlRaw) || ""; } catch {}
+        if (lastRaw) {
+          // auto-load silently; if fails, user can see error
+          loadLocalUrl(lastRaw, { autoResume: true });
+        }
+      }
+    }
+
+    // Default
+    setActive("youtube");
+    restoreOnLoad();
+  </script>
+</body>
+</html>
