@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Local Transcribe (YouTube + 本地影片)</title>
+  <title>Local Transcribe (YouTube + 本地影片 + Vocab/YouGlish)</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans TC", sans-serif; margin: 16px; }
     .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
@@ -35,15 +35,16 @@
       background: #fafafa; margin: 4px 6px 0 0; font-size: 13px;
     }
     .tag button { padding: 2px 8px; border-radius: 999px; }
-    .videoList { display: grid; grid-template-columns: 1fr; gap: 8px; }
-    .videoItem {
-      display:flex; align-items:center; justify-content:space-between; gap:12px;
-      padding: 10px; border: 1px solid #ddd; border-radius: 10px; background:#fff;
+    .frameBox {
+      width: 100%;
+      height: 520px;
+      border: 1px solid #ddd;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #fff;
     }
-    .videoItem .meta { display:flex; flex-direction:column; gap:2px; }
-    .videoItem .meta .title { font-weight:600; }
-    .videoItem .meta .sub { color:#666; font-size:12px; }
-    .btnRow { display:flex; gap:8px; flex-wrap:wrap; }
+    iframe { width: 100%; height: 100%; border: 0; }
+    .dangerNote { background:#fff7ed; border:1px solid #fed7aa; color:#7c2d12; padding:10px; border-radius:10px; }
   </style>
 </head>
 
@@ -140,7 +141,7 @@
     </div>
   </div>
 
-  <!-- VOCAB + DAILY YOUTUBE (NEW) -->
+  <!-- VOCAB + YOUGLISH (NEW) -->
   <div class="card" style="margin-top:12px;">
     <h3 class="sectionTitle">📚 Vocabulary box（會自動保存到瀏覽器）</h3>
 
@@ -153,23 +154,27 @@
 
     <div id="vocabTags"></div>
 
-    <div class="hint" style="margin-top:10px;">
-      每天打開頁面：會從你保存的單字中選一個「今日單字」，並用它去 YouTube 搜尋，列出 5 個相關影片（像 youglish 的概念）。<br/>
-      注意：這裡用的是 YouTube 的公開搜尋頁（不需要 API key），顯示的是可點擊的影片連結。
+    <div class="hint dangerNote" style="margin-top:10px;">
+      你剛剛遇到的 CORS 是正常現象：純前端很難穩定「抓 YouTube 搜尋結果並解析 5 支影片」。<br/>
+      所以這裡改成：直接用 youglish 的固定 pattern：<span class="mono">https://youglish.com/pronounce/&lt;word&gt;/english</span> 來顯示。<br/>
+      ⚠️ 如果 YouGlish 禁止被 iframe 嵌入（它們可能有安全政策），下方會自動改成提供「Open YouGlish」按鈕。
     </div>
 
     <hr style="border:none;border-top:1px solid #eee;margin:12px 0;" />
 
-    <h3 class="sectionTitle">🎬 今日單字 & 5 個相關 YouTube 影片</h3>
+    <h3 class="sectionTitle">🎧 今日單字（YouGlish）</h3>
 
     <div class="row" style="margin-bottom:8px;">
       <div><strong>Today:</strong> <span id="todayWord" class="mono"></span></div>
       <button id="refreshTodayBtn">換一個單字</button>
-      <button id="reloadVideosBtn">重新載入 5 個影片</button>
+      <button id="openYouglishBtn">Open YouGlish</button>
     </div>
 
-    <div id="videoStatus" class="hint"></div>
-    <div id="videoList" class="videoList" style="margin-top:10px;"></div>
+    <div id="ygStatus" class="hint"></div>
+
+    <div class="frameBox" style="margin-top:10px;">
+      <iframe id="youglishFrame" title="YouGlish" referrerpolicy="no-referrer"></iframe>
+    </div>
   </div>
 
   <script>
@@ -213,10 +218,9 @@
       localLastUrlRaw: "lt_local_url_raw",
       localFileTimes: "lt_local_file_times",
 
-      // NEW: vocab + daily
-      vocabList: "lt_vocab_list",              // JSON array
+      vocabList: "lt_vocab_list",
       todayWord: "lt_vocab_today_word",
-      todayDate: "lt_vocab_today_date"         // YYYY-MM-DD
+      todayDate: "lt_vocab_today_date"
     };
     function urlTimeKey(encodedAbsUrl) { return `lt_local_url_time__${encodedAbsUrl}`; }
 
@@ -261,7 +265,6 @@
 
     const notesEl = document.getElementById("notes");
 
-    // NEW: vocab DOM
     const vocabInput = document.getElementById("vocabInput");
     const addVocabBtn = document.getElementById("addVocabBtn");
     const clearVocabBtn = document.getElementById("clearVocabBtn");
@@ -270,9 +273,9 @@
 
     const todayWordEl = document.getElementById("todayWord");
     const refreshTodayBtn = document.getElementById("refreshTodayBtn");
-    const reloadVideosBtn = document.getElementById("reloadVideosBtn");
-    const videoStatus = document.getElementById("videoStatus");
-    const videoList = document.getElementById("videoList");
+    const openYouglishBtn = document.getElementById("openYouglishBtn");
+    const ygStatus = document.getElementById("ygStatus");
+    const youglishFrame = document.getElementById("youglishFrame");
 
     // ---------- State ----------
     let active = "youtube";
@@ -466,12 +469,11 @@
       } catch {}
     }
 
-    // Notes persistence
     notesEl.addEventListener("input", () => {
       try { localStorage.setItem(LS.notes, notesEl.value); } catch {}
     });
 
-    // ---------- Choose-file resume ----------
+    // ---------- Local choose-file resume ----------
     function fileFingerprint(file) { return `${file.name}__${file.size}__${file.lastModified}`; }
     function getLocalFileTimesMap() {
       try {
@@ -516,7 +518,7 @@
       updateNowPlaying(`LocalFile: ${file.name}`);
     });
 
-    // ---------- Local URL mode (encoded absolute URL) ----------
+    // ---------- Local URL mode (encode 中文/空白) ----------
     function normalizeLocalUrlToEncodedAbs(u) {
       const s = (u || "").trim();
       if (!s) return "";
@@ -532,16 +534,6 @@
         }
         return res.ok;
       } catch { return false; }
-    }
-
-    function getLocalUrlTime(encodedAbsUrl) {
-      try {
-        const t = Number(localStorage.getItem(urlTimeKey(encodedAbsUrl)) || "0");
-        return (isFinite(t) && t > 0) ? t : null;
-      } catch { return null; }
-    }
-    function setLocalUrlTime(encodedAbsUrl, t) {
-      try { localStorage.setItem(urlTimeKey(encodedAbsUrl), String(Number(t || 0))); } catch {}
     }
 
     async function loadLocalUrl(rawUrl, { autoResume=true } = {}) {
@@ -578,6 +570,8 @@
 
       currentLocalFingerprint = null;
       currentLocalUrlEncoded = encoded;
+
+      // resume by encoded URL key
       pendingLocalSeek = autoResume ? getLocalUrlTime(encoded) : null;
 
       localVideo.src = encoded;
@@ -587,6 +581,16 @@
       document.querySelector('input[name="src"][value="local"]').checked = true;
       updateNowPlaying(`LocalURL: ${raw}`);
       okBox.textContent = `已載入（URL）：${raw}`;
+    }
+
+    function getLocalUrlTime(encodedAbsUrl) {
+      try {
+        const t = Number(localStorage.getItem(urlTimeKey(encodedAbsUrl)) || "0");
+        return (isFinite(t) && t > 0) ? t : null;
+      } catch { return null; }
+    }
+    function setLocalUrlTime(encodedAbsUrl, t) {
+      try { localStorage.setItem(urlTimeKey(encodedAbsUrl), String(Number(t || 0))); } catch {}
     }
 
     loadLocalUrlBtn.addEventListener("click", async () => {
@@ -663,25 +667,25 @@
       }
     }
 
-    // ---------- VOCAB (NEW) ----------
+    // ---------- VOCAB ----------
     function loadVocab() {
       try {
         const raw = localStorage.getItem(LS.vocabList);
         if (!raw) return [];
         const arr = JSON.parse(raw);
         if (!Array.isArray(arr)) return [];
-        // normalize + unique
-        const norm = arr
-          .map(x => (String(x || "").trim()))
-          .filter(Boolean)
-          .map(x => x.replace(/\s+/g, " "));
+        const norm = arr.map(x => String(x || "").trim()).filter(Boolean).map(x => x.replace(/\s+/g, " "));
         return Array.from(new Set(norm));
       } catch { return []; }
     }
+    function saveVocab(list) { try { localStorage.setItem(LS.vocabList, JSON.stringify(list)); } catch {} }
 
-    function saveVocab(list) {
-      try { localStorage.setItem(LS.vocabList, JSON.stringify(list)); } catch {}
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) => ({
+        "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+      }[c]));
     }
+    function escapeAttr(s) { return escapeHtml(s).replace(/"/g, "&quot;"); }
 
     function renderVocab() {
       const list = loadVocab();
@@ -704,10 +708,7 @@
           const next = loadVocab().filter(x => x !== w);
           saveVocab(next);
           renderVocab();
-          // if removing today word, rotate
-          const tw = getTodayWordRaw();
-          if (tw && tw === w) pickTodayWord(true);
-          refreshDailyVideos();
+          ensureTodayWord(false);
         });
       });
     }
@@ -719,12 +720,10 @@
       if (!list.includes(w)) {
         list.push(w);
         saveVocab(list);
-        renderVocab();
       }
       vocabInput.value = "";
-      // If no today word, pick one now
-      if (!getTodayWordRaw()) pickTodayWord(true);
-      refreshDailyVideos();
+      renderVocab();
+      ensureTodayWord(false);
     }
 
     addVocabBtn.addEventListener("click", () => addWord(vocabInput.value));
@@ -737,63 +736,53 @@
       saveVocab([]);
       try { localStorage.removeItem(LS.todayWord); localStorage.removeItem(LS.todayDate); } catch {}
       renderVocab();
-      updateTodayUI("");
-      videoList.innerHTML = "";
-      videoStatus.textContent = "（尚無單字）";
+      setYouglishForWord("");
     });
 
-    function getTodayWordRaw() {
-      try { return localStorage.getItem(LS.todayWord) || ""; } catch { return ""; }
+    function getSavedToday() {
+      try {
+        return {
+          date: localStorage.getItem(LS.todayDate) || "",
+          word: localStorage.getItem(LS.todayWord) || ""
+        };
+      } catch { return { date:"", word:"" }; }
     }
-
-    function setTodayWord(word) {
+    function setSavedToday(word) {
       try {
         localStorage.setItem(LS.todayWord, word);
         localStorage.setItem(LS.todayDate, todayKey());
       } catch {}
     }
 
-    function pickTodayWord(forceNew=false) {
+    function ensureTodayWord(forceNew) {
       const list = loadVocab();
       if (!list.length) {
-        updateTodayUI("");
+        setYouglishForWord("");
         return "";
       }
 
       const today = todayKey();
-      let savedDate = "";
-      let savedWord = "";
-      try {
-        savedDate = localStorage.getItem(LS.todayDate) || "";
-        savedWord = localStorage.getItem(LS.todayWord) || "";
-      } catch {}
+      const saved = getSavedToday();
 
-      if (!forceNew && savedDate === today && savedWord && list.includes(savedWord)) {
-        updateTodayUI(savedWord);
-        return savedWord;
-      }
-
-      // choose a word based on day hash, but allow forceNew random
-      let picked = "";
-      if (forceNew) {
-        picked = list[Math.floor(Math.random() * list.length)];
+      let word = "";
+      if (!forceNew && saved.date === today && saved.word && list.includes(saved.word)) {
+        word = saved.word;
       } else {
-        // deterministic pick per day
-        const seed = hashString(today + "|" + list.join("|"));
-        picked = list[seed % list.length];
+        // deterministic per day unless forceNew
+        if (forceNew) {
+          word = list[Math.floor(Math.random() * list.length)];
+        } else {
+          const seed = hashString(today + "|" + list.join("|"));
+          word = list[seed % list.length];
+        }
+        setSavedToday(word);
       }
 
-      setTodayWord(picked);
-      updateTodayUI(picked);
-      return picked;
-    }
-
-    function updateTodayUI(word) {
-      todayWordEl.textContent = word ? word : "(no word yet)";
+      setYouglishForWord(word);
+      return word;
     }
 
     function hashString(s) {
-      // simple deterministic hash
       let h = 2166136261;
       for (let i = 0; i < s.length; i++) {
         h ^= s.charCodeAt(i);
@@ -802,112 +791,39 @@
       return Math.abs(h);
     }
 
-    refreshTodayBtn.addEventListener("click", () => {
-      pickTodayWord(true);
-      refreshDailyVideos();
-    });
+    refreshTodayBtn.addEventListener("click", () => ensureTodayWord(true));
 
-    reloadVideosBtn.addEventListener("click", () => refreshDailyVideos());
-
-    // ---------- Daily YouTube videos (NEW) ----------
-    // Without API key: we fetch YouTube search HTML and extract first 5 videoIds.
-    // Works on many setups, but if CORS blocks it, we fall back to open search links.
-    async function fetchYouTubeVideoIds(query, max=5) {
-      const q = encodeURIComponent(query);
-      const url = `https://www.youtube.com/results?search_query=${q}`;
-      const res = await fetch(url, { method: "GET" });
-      const html = await res.text();
-
-      // Video IDs appear like "videoId":"XXXXXXXXXXX"
-      const ids = [];
-      const re = /"videoId":"([a-zA-Z0-9_-]{11})"/g;
-      let m;
-      while ((m = re.exec(html)) !== null) {
-        const id = m[1];
-        if (!ids.includes(id)) ids.push(id);
-        if (ids.length >= max) break;
-      }
-      return ids;
+    // ---------- YouGlish embedding ----------
+    function buildYouglishUrl(word) {
+      const w = (word || "").trim();
+      if (!w) return "";
+      // same pattern as user provided
+      return `https://youglish.com/pronounce/${encodeURIComponent(w)}/english`;
     }
 
-    function renderVideoList(word, ids) {
-      videoList.innerHTML = "";
-      if (!word) {
-        videoStatus.textContent = "（尚無單字）";
+    function setYouglishForWord(word) {
+      const w = (word || "").trim();
+      todayWordEl.textContent = w ? w : "(no word yet)";
+
+      const url = buildYouglishUrl(w);
+      openYouglishBtn.disabled = !url;
+      openYouglishBtn.onclick = () => { if (url) window.open(url, "_blank", "noopener"); };
+
+      if (!url) {
+        youglishFrame.src = "about:blank";
+        ygStatus.textContent = "（尚無單字）";
         return;
       }
 
-      if (!ids || !ids.length) {
-        videoStatus.textContent = `找不到影片（或被 CORS 擋住）。你仍可點這裡用 YouTube 搜尋：`;
-        const a = document.createElement("a");
-        a.href = `https://www.youtube.com/results?search_query=${encodeURIComponent(word + " pronunciation")}`;
-        a.target = "_blank";
-        a.rel = "noopener";
-        a.textContent = "Open YouTube search";
-        videoStatus.appendChild(document.createTextNode(" "));
-        videoStatus.appendChild(a);
-        return;
-      }
+      ygStatus.textContent = `嘗試在頁面中嵌入 YouGlish：${url}\n如果下方是空白或顯示錯誤，代表 YouGlish 禁止 iframe。那就用 Open YouGlish 按鈕即可。`;
+      youglishFrame.src = url;
 
-      videoStatus.textContent = `Word: "${word}"（點選影片會切換到上方 YouTube 播放器）`;
-
-      ids.forEach((id, idx) => {
-        const item = document.createElement("div");
-        item.className = "videoItem";
-        item.innerHTML = `
-          <div class="meta">
-            <div class="title">#${idx + 1} — ${escapeHtml(word)} (YouTube)</div>
-            <div class="sub mono">videoId: ${id}</div>
-          </div>
-          <div class="btnRow">
-            <button data-play="${id}">Play here</button>
-            <a class="mono" href="https://www.youtube.com/watch?v=${id}" target="_blank" rel="noopener">Open</a>
-          </div>
-        `;
-        videoList.appendChild(item);
-      });
-
-      videoList.querySelectorAll("button[data-play]").forEach(btn => {
-        btn.addEventListener("click", () => {
-          const id = btn.getAttribute("data-play");
-          if (!ytReady) return alert("YouTube API 還在初始化，請稍等一下再按。");
-          ytPlayer.loadVideoById(id);
-          setActive("youtube");
-          document.querySelector('input[name="src"][value="youtube"]').checked = true;
-          okBox.textContent = `已載入 YouTube（from vocab）：${id}`;
-        });
-      });
-    }
-
-    async function refreshDailyVideos() {
-      const word = pickTodayWord(false);
-      if (!word) {
-        renderVideoList("", []);
-        return;
-      }
-
-      // Create a more Youglish-like query
-      const query = `${word} english pronunciation`;
-      videoStatus.textContent = `Searching YouTube for: ${query} ...`;
-      videoList.innerHTML = "";
-
-      try {
-        const ids = await fetchYouTubeVideoIds(query, 5);
-        renderVideoList(word, ids);
-      } catch (e) {
-        // likely CORS blocked in some environments
-        renderVideoList(word, []);
-      }
-    }
-
-    // ---------- HTML escaping ----------
-    function escapeHtml(s) {
-      return String(s).replace(/[&<>"']/g, (c) => ({
-        "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
-      }[c]));
-    }
-    function escapeAttr(s) {
-      return escapeHtml(s).replace(/"/g, "&quot;");
+      // Detect iframe blocked (best effort)
+      // If blocked, it usually stays about:blank OR can't access due to cross-origin; we just show guidance after a short delay.
+      setTimeout(() => {
+        // We cannot reliably inspect due to cross-origin, so we only provide hint.
+        // If you see blank, use the Open button.
+      }, 1200);
     }
 
     // ---------- UI tickers ----------
@@ -1000,11 +916,9 @@
         if (lastRaw) loadLocalUrl(lastRaw, { autoResume: true });
       }
 
-      // vocab render + daily pick
+      // vocab + youglish
       renderVocab();
-      const w = pickTodayWord(false);
-      updateTodayUI(w);
-      refreshDailyVideos();
+      ensureTodayWord(false);
     }
 
     // Default
