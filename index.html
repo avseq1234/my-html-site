@@ -28,6 +28,22 @@
     .warn { color:#8a4b00; }
     .err { color:#b00020; }
     .ok { color:#0b6b0b; }
+    .sectionTitle { margin: 0 0 8px 0; font-size: 16px; }
+    .tag {
+      display:inline-flex; align-items:center; gap:8px;
+      padding: 4px 10px; border: 1px solid #ddd; border-radius: 999px;
+      background: #fafafa; margin: 4px 6px 0 0; font-size: 13px;
+    }
+    .tag button { padding: 2px 8px; border-radius: 999px; }
+    .videoList { display: grid; grid-template-columns: 1fr; gap: 8px; }
+    .videoItem {
+      display:flex; align-items:center; justify-content:space-between; gap:12px;
+      padding: 10px; border: 1px solid #ddd; border-radius: 10px; background:#fff;
+    }
+    .videoItem .meta { display:flex; flex-direction:column; gap:2px; }
+    .videoItem .meta .title { font-weight:600; }
+    .videoItem .meta .sub { color:#666; font-size:12px; }
+    .btnRow { display:flex; gap:8px; flex-wrap:wrap; }
   </style>
 </head>
 
@@ -86,7 +102,7 @@
       <span class="kbd">Option(Alt)+→</span> 進 5 秒
     </div>
 
-    <!-- Progress bar in highlighted area -->
+    <!-- Progress bar -->
     <div class="topTimeline">
       <input id="timeline" type="range" min="0" max="0" step="0.05" value="0" disabled />
       <div class="row" style="justify-content:space-between; margin-top:6px;">
@@ -122,6 +138,38 @@
       <h3 style="margin-top:0;">逐字稿</h3>
       <textarea id="notes" placeholder="在這裡打逐字稿…"></textarea>
     </div>
+  </div>
+
+  <!-- VOCAB + DAILY YOUTUBE (NEW) -->
+  <div class="card" style="margin-top:12px;">
+    <h3 class="sectionTitle">📚 Vocabulary box（會自動保存到瀏覽器）</h3>
+
+    <div class="row" style="margin-bottom:8px;">
+      <input id="vocabInput" type="text" placeholder="輸入新單字（英文），按 Enter 或按 Add" />
+      <button id="addVocabBtn">Add</button>
+      <button id="clearVocabBtn" title="清空全部單字">Clear all</button>
+      <span id="vocabCount" class="small subtle"></span>
+    </div>
+
+    <div id="vocabTags"></div>
+
+    <div class="hint" style="margin-top:10px;">
+      每天打開頁面：會從你保存的單字中選一個「今日單字」，並用它去 YouTube 搜尋，列出 5 個相關影片（像 youglish 的概念）。<br/>
+      注意：這裡用的是 YouTube 的公開搜尋頁（不需要 API key），顯示的是可點擊的影片連結。
+    </div>
+
+    <hr style="border:none;border-top:1px solid #eee;margin:12px 0;" />
+
+    <h3 class="sectionTitle">🎬 今日單字 & 5 個相關 YouTube 影片</h3>
+
+    <div class="row" style="margin-bottom:8px;">
+      <div><strong>Today:</strong> <span id="todayWord" class="mono"></span></div>
+      <button id="refreshTodayBtn">換一個單字</button>
+      <button id="reloadVideosBtn">重新載入 5 個影片</button>
+    </div>
+
+    <div id="videoStatus" class="hint"></div>
+    <div id="videoList" class="videoList" style="margin-top:10px;"></div>
   </div>
 
   <script>
@@ -162,13 +210,22 @@
       time: "lt_time",
       paused: "lt_paused",
       notes: "lt_notes",
-      localLastUrlRaw: "lt_local_url_raw", // raw string as user typed (nice UI)
-      localFileTimes: "lt_local_file_times" // JSON map fingerprint -> time
-    };
+      localLastUrlRaw: "lt_local_url_raw",
+      localFileTimes: "lt_local_file_times",
 
-    // URL time key uses encoded absolute URL (important for 中文/空白)
-    function urlTimeKey(encodedAbsUrl) {
-      return `lt_local_url_time__${encodedAbsUrl}`;
+      // NEW: vocab + daily
+      vocabList: "lt_vocab_list",              // JSON array
+      todayWord: "lt_vocab_today_word",
+      todayDate: "lt_vocab_today_date"         // YYYY-MM-DD
+    };
+    function urlTimeKey(encodedAbsUrl) { return `lt_local_url_time__${encodedAbsUrl}`; }
+
+    function todayKey() {
+      const d = new Date();
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      const dd = String(d.getDate()).padStart(2, "0");
+      return `${yyyy}-${mm}-${dd}`;
     }
 
     // ---------- DOM ----------
@@ -204,6 +261,19 @@
 
     const notesEl = document.getElementById("notes");
 
+    // NEW: vocab DOM
+    const vocabInput = document.getElementById("vocabInput");
+    const addVocabBtn = document.getElementById("addVocabBtn");
+    const clearVocabBtn = document.getElementById("clearVocabBtn");
+    const vocabTags = document.getElementById("vocabTags");
+    const vocabCount = document.getElementById("vocabCount");
+
+    const todayWordEl = document.getElementById("todayWord");
+    const refreshTodayBtn = document.getElementById("refreshTodayBtn");
+    const reloadVideosBtn = document.getElementById("reloadVideosBtn");
+    const videoStatus = document.getElementById("videoStatus");
+    const videoList = document.getElementById("videoList");
+
     // ---------- State ----------
     let active = "youtube";
     let ytPlayer = null;
@@ -214,11 +284,7 @@
     let lastKnownDuration = 0;
 
     let pendingLocalSeek = null;
-
-    // for choose-file resume
     let currentLocalFingerprint = null;
-
-    // for local URL mode: the encoded absolute URL currently loaded
     let currentLocalUrlEncoded = null;
 
     // ---------- Toggle source ----------
@@ -237,7 +303,6 @@
 
       try { localStorage.setItem(LS.active, which); } catch {}
 
-      // reset UI state
       lastKnownDuration = 0;
       syncTimelineBounds(true);
       timelineMsg.textContent = "";
@@ -329,7 +394,7 @@
       if (e.altKey && e.key === "ArrowLeft") { e.preventDefault(); handleAltArrow(-5); return; }
     }, { capture: true });
 
-    // ---------- Progress bar: scrub + seek ----------
+    // ---------- Progress bar ----------
     function beginScrub() {
       if (isScrubbing) return;
       isScrubbing = true;
@@ -342,25 +407,14 @@
       if (wasPlayingBeforeScrub) play();
       wasPlayingBeforeScrub = false;
     }
+    ["pointerup","mouseup","touchend","touchcancel"].forEach(ev => window.addEventListener(ev, endScrub, { capture: true }));
+    ["pointerdown","mousedown","touchstart"].forEach(ev => timeline.addEventListener(ev, beginScrub, { passive: true }));
 
-    // Global end events (in case mouseup happens outside the slider)
-    ["pointerup","mouseup","touchend","touchcancel"].forEach(ev => {
-      window.addEventListener(ev, endScrub, { capture: true });
-    });
-
-    // Start scrub events
-    ["pointerdown","mousedown","touchstart"].forEach(ev => {
-      timeline.addEventListener(ev, beginScrub, { passive: true });
-    });
-
-    // While dragging: seek immediately
     timeline.addEventListener("input", () => {
       const v = Number(timeline.value || "0");
       curTimeEl.textContent = fmtTime(v);
       seekTo(v);
     });
-
-    // On release/click: seek again + end scrub
     timeline.addEventListener("change", () => {
       const v = Number(timeline.value || "0");
       seekTo(v);
@@ -385,7 +439,6 @@
       durTimeEl.textContent = fmtTime(dur);
 
       if (!enable) {
-        // don't force reset current time label; just show message
         timelineMsg.textContent = seekable ? "" : "⚠️ 目前無法取得正確 duration（常見：mp4 沒 faststart），所以 URL 模式的進度條可能無法拖曳。";
       } else {
         timelineMsg.textContent = "";
@@ -413,15 +466,13 @@
       } catch {}
     }
 
-    // ---------- Notes persistence ----------
+    // Notes persistence
     notesEl.addEventListener("input", () => {
       try { localStorage.setItem(LS.notes, notesEl.value); } catch {}
     });
 
-    // ---------- Choose-file resume (per file fingerprint) ----------
-    function fileFingerprint(file) {
-      return `${file.name}__${file.size}__${file.lastModified}`;
-    }
+    // ---------- Choose-file resume ----------
+    function fileFingerprint(file) { return `${file.name}__${file.size}__${file.lastModified}`; }
     function getLocalFileTimesMap() {
       try {
         const raw = localStorage.getItem(LS.localFileTimes);
@@ -430,9 +481,7 @@
         return (obj && typeof obj === "object") ? obj : {};
       } catch { return {}; }
     }
-    function setLocalFileTimesMap(map) {
-      try { localStorage.setItem(LS.localFileTimes, JSON.stringify(map)); } catch {}
-    }
+    function setLocalFileTimesMap(map) { try { localStorage.setItem(LS.localFileTimes, JSON.stringify(map)); } catch {} }
     function getLocalFileTime(fp) {
       if (!fp) return null;
       const map = getLocalFileTimesMap();
@@ -456,7 +505,6 @@
 
       currentLocalFingerprint = fileFingerprint(file);
       currentLocalUrlEncoded = null;
-
       pendingLocalSeek = getLocalFileTime(currentLocalFingerprint);
 
       const blobUrl = URL.createObjectURL(file);
@@ -468,16 +516,11 @@
       updateNowPlaying(`LocalFile: ${file.name}`);
     });
 
-    // ---------- Local URL mode (handles 中文/空白 by encoding) ----------
+    // ---------- Local URL mode (encoded absolute URL) ----------
     function normalizeLocalUrlToEncodedAbs(u) {
       const s = (u || "").trim();
       if (!s) return "";
-      try {
-        // new URL() will produce an encoded absolute URL (important!)
-        return new URL(s, window.location.href).href;
-      } catch {
-        return "";
-      }
+      try { return new URL(s, window.location.href).href; } catch { return ""; }
     }
 
     async function checkUrlReachable(encodedAbsUrl) {
@@ -488,9 +531,7 @@
           return res2.ok;
         }
         return res.ok;
-      } catch {
-        return false;
-      }
+      } catch { return false; }
     }
 
     function getLocalUrlTime(encodedAbsUrl) {
@@ -520,7 +561,6 @@
       const encoded = normalizeLocalUrlToEncodedAbs(raw);
       if (!encoded) return alert("URL 解析失敗，請檢查輸入內容。");
 
-      // Save raw (nice UI) so Use last works, but load by encoded URL
       try { localStorage.setItem(LS.localLastUrlRaw, raw); } catch {}
       localUrlInput.value = raw;
 
@@ -536,10 +576,8 @@
         return;
       }
 
-      // URL mode: clear choose-file fingerprint
       currentLocalFingerprint = null;
       currentLocalUrlEncoded = encoded;
-
       pendingLocalSeek = autoResume ? getLocalUrlTime(encoded) : null;
 
       localVideo.src = encoded;
@@ -568,7 +606,6 @@
       timelineMsg.textContent = "";
 
       try { if (localVideo.src && localVideo.src.startsWith("blob:")) URL.revokeObjectURL(localVideo.src); } catch {}
-
       localVideo.pause();
       localVideo.removeAttribute("src");
       localVideo.load();
@@ -582,7 +619,6 @@
       syncTimelineBounds(true);
     });
 
-    // Resume local after metadata ready
     function resumeLocalIfNeeded() {
       if (pendingLocalSeek == null) return;
       const dur = localVideo.duration;
@@ -597,34 +633,26 @@
     localVideo.addEventListener("loadedmetadata", resumeLocalIfNeeded);
     localVideo.addEventListener("canplay", resumeLocalIfNeeded);
 
-    // Show local media error
     localVideo.addEventListener("error", () => {
       const err = localVideo.error;
       errorBox.textContent = `影片載入錯誤（Local）: code=${err ? err.code : "unknown"}。常見原因：路徑 404、codec 不支援、或用 file:// 開啟。`;
     });
 
-    // Persist local time
     localVideo.addEventListener("timeupdate", () => {
       const t = localVideo.currentTime || 0;
-
-      // save per-file or per-url
       if (currentLocalFingerprint) {
         setLocalFileTime(currentLocalFingerprint, t);
       } else if (currentLocalUrlEncoded) {
         setLocalUrlTime(currentLocalUrlEncoded, t);
       } else {
-        // fallback: currentSrc (already encoded)
         const u = localVideo.currentSrc || "";
         if (u) setLocalUrlTime(u, t);
       }
     });
 
-    // ---------- Now playing label ----------
+    // ---------- Now playing ----------
     function updateNowPlaying(forceText) {
-      if (typeof forceText === "string") {
-        nowPlaying.textContent = forceText ? forceText : "";
-        return;
-      }
+      if (typeof forceText === "string") { nowPlaying.textContent = forceText || ""; return; }
       if (active === "youtube") {
         let id = "";
         try { id = localStorage.getItem(LS.ytId) || ""; } catch {}
@@ -633,6 +661,253 @@
         const src = localVideo.currentSrc || localVideo.getAttribute("src") || "";
         nowPlaying.textContent = src ? `Local: ${src}` : "";
       }
+    }
+
+    // ---------- VOCAB (NEW) ----------
+    function loadVocab() {
+      try {
+        const raw = localStorage.getItem(LS.vocabList);
+        if (!raw) return [];
+        const arr = JSON.parse(raw);
+        if (!Array.isArray(arr)) return [];
+        // normalize + unique
+        const norm = arr
+          .map(x => (String(x || "").trim()))
+          .filter(Boolean)
+          .map(x => x.replace(/\s+/g, " "));
+        return Array.from(new Set(norm));
+      } catch { return []; }
+    }
+
+    function saveVocab(list) {
+      try { localStorage.setItem(LS.vocabList, JSON.stringify(list)); } catch {}
+    }
+
+    function renderVocab() {
+      const list = loadVocab();
+      vocabTags.innerHTML = "";
+      vocabCount.textContent = list.length ? `${list.length} words saved` : "No words yet";
+
+      list.forEach(word => {
+        const el = document.createElement("span");
+        el.className = "tag";
+        el.innerHTML = `
+          <span class="mono">${escapeHtml(word)}</span>
+          <button data-word="${escapeAttr(word)}" title="Remove">x</button>
+        `;
+        vocabTags.appendChild(el);
+      });
+
+      vocabTags.querySelectorAll("button[data-word]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const w = btn.getAttribute("data-word");
+          const next = loadVocab().filter(x => x !== w);
+          saveVocab(next);
+          renderVocab();
+          // if removing today word, rotate
+          const tw = getTodayWordRaw();
+          if (tw && tw === w) pickTodayWord(true);
+          refreshDailyVideos();
+        });
+      });
+    }
+
+    function addWord(word) {
+      const w = (word || "").trim().replace(/\s+/g, " ");
+      if (!w) return;
+      const list = loadVocab();
+      if (!list.includes(w)) {
+        list.push(w);
+        saveVocab(list);
+        renderVocab();
+      }
+      vocabInput.value = "";
+      // If no today word, pick one now
+      if (!getTodayWordRaw()) pickTodayWord(true);
+      refreshDailyVideos();
+    }
+
+    addVocabBtn.addEventListener("click", () => addWord(vocabInput.value));
+    vocabInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); addWord(vocabInput.value); }
+    });
+
+    clearVocabBtn.addEventListener("click", () => {
+      if (!confirm("確定要清空所有單字？")) return;
+      saveVocab([]);
+      try { localStorage.removeItem(LS.todayWord); localStorage.removeItem(LS.todayDate); } catch {}
+      renderVocab();
+      updateTodayUI("");
+      videoList.innerHTML = "";
+      videoStatus.textContent = "（尚無單字）";
+    });
+
+    function getTodayWordRaw() {
+      try { return localStorage.getItem(LS.todayWord) || ""; } catch { return ""; }
+    }
+
+    function setTodayWord(word) {
+      try {
+        localStorage.setItem(LS.todayWord, word);
+        localStorage.setItem(LS.todayDate, todayKey());
+      } catch {}
+    }
+
+    function pickTodayWord(forceNew=false) {
+      const list = loadVocab();
+      if (!list.length) {
+        updateTodayUI("");
+        return "";
+      }
+
+      const today = todayKey();
+      let savedDate = "";
+      let savedWord = "";
+      try {
+        savedDate = localStorage.getItem(LS.todayDate) || "";
+        savedWord = localStorage.getItem(LS.todayWord) || "";
+      } catch {}
+
+      if (!forceNew && savedDate === today && savedWord && list.includes(savedWord)) {
+        updateTodayUI(savedWord);
+        return savedWord;
+      }
+
+      // choose a word based on day hash, but allow forceNew random
+      let picked = "";
+      if (forceNew) {
+        picked = list[Math.floor(Math.random() * list.length)];
+      } else {
+        // deterministic pick per day
+        const seed = hashString(today + "|" + list.join("|"));
+        picked = list[seed % list.length];
+      }
+
+      setTodayWord(picked);
+      updateTodayUI(picked);
+      return picked;
+    }
+
+    function updateTodayUI(word) {
+      todayWordEl.textContent = word ? word : "(no word yet)";
+    }
+
+    function hashString(s) {
+      // simple deterministic hash
+      let h = 2166136261;
+      for (let i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+      }
+      return Math.abs(h);
+    }
+
+    refreshTodayBtn.addEventListener("click", () => {
+      pickTodayWord(true);
+      refreshDailyVideos();
+    });
+
+    reloadVideosBtn.addEventListener("click", () => refreshDailyVideos());
+
+    // ---------- Daily YouTube videos (NEW) ----------
+    // Without API key: we fetch YouTube search HTML and extract first 5 videoIds.
+    // Works on many setups, but if CORS blocks it, we fall back to open search links.
+    async function fetchYouTubeVideoIds(query, max=5) {
+      const q = encodeURIComponent(query);
+      const url = `https://www.youtube.com/results?search_query=${q}`;
+      const res = await fetch(url, { method: "GET" });
+      const html = await res.text();
+
+      // Video IDs appear like "videoId":"XXXXXXXXXXX"
+      const ids = [];
+      const re = /"videoId":"([a-zA-Z0-9_-]{11})"/g;
+      let m;
+      while ((m = re.exec(html)) !== null) {
+        const id = m[1];
+        if (!ids.includes(id)) ids.push(id);
+        if (ids.length >= max) break;
+      }
+      return ids;
+    }
+
+    function renderVideoList(word, ids) {
+      videoList.innerHTML = "";
+      if (!word) {
+        videoStatus.textContent = "（尚無單字）";
+        return;
+      }
+
+      if (!ids || !ids.length) {
+        videoStatus.textContent = `找不到影片（或被 CORS 擋住）。你仍可點這裡用 YouTube 搜尋：`;
+        const a = document.createElement("a");
+        a.href = `https://www.youtube.com/results?search_query=${encodeURIComponent(word + " pronunciation")}`;
+        a.target = "_blank";
+        a.rel = "noopener";
+        a.textContent = "Open YouTube search";
+        videoStatus.appendChild(document.createTextNode(" "));
+        videoStatus.appendChild(a);
+        return;
+      }
+
+      videoStatus.textContent = `Word: "${word}"（點選影片會切換到上方 YouTube 播放器）`;
+
+      ids.forEach((id, idx) => {
+        const item = document.createElement("div");
+        item.className = "videoItem";
+        item.innerHTML = `
+          <div class="meta">
+            <div class="title">#${idx + 1} — ${escapeHtml(word)} (YouTube)</div>
+            <div class="sub mono">videoId: ${id}</div>
+          </div>
+          <div class="btnRow">
+            <button data-play="${id}">Play here</button>
+            <a class="mono" href="https://www.youtube.com/watch?v=${id}" target="_blank" rel="noopener">Open</a>
+          </div>
+        `;
+        videoList.appendChild(item);
+      });
+
+      videoList.querySelectorAll("button[data-play]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const id = btn.getAttribute("data-play");
+          if (!ytReady) return alert("YouTube API 還在初始化，請稍等一下再按。");
+          ytPlayer.loadVideoById(id);
+          setActive("youtube");
+          document.querySelector('input[name="src"][value="youtube"]').checked = true;
+          okBox.textContent = `已載入 YouTube（from vocab）：${id}`;
+        });
+      });
+    }
+
+    async function refreshDailyVideos() {
+      const word = pickTodayWord(false);
+      if (!word) {
+        renderVideoList("", []);
+        return;
+      }
+
+      // Create a more Youglish-like query
+      const query = `${word} english pronunciation`;
+      videoStatus.textContent = `Searching YouTube for: ${query} ...`;
+      videoList.innerHTML = "";
+
+      try {
+        const ids = await fetchYouTubeVideoIds(query, 5);
+        renderVideoList(word, ids);
+      } catch (e) {
+        // likely CORS blocked in some environments
+        renderVideoList(word, []);
+      }
+    }
+
+    // ---------- HTML escaping ----------
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) => ({
+        "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+      }[c]));
+    }
+    function escapeAttr(s) {
+      return escapeHtml(s).replace(/"/g, "&quot;");
     }
 
     // ---------- UI tickers ----------
@@ -658,7 +933,6 @@
           durTimeEl.textContent = fmtTime(dur);
           persistPlaybackState(t, isPaused());
         }
-
         requestAnimationFrame(loop);
       }
       loop();
@@ -672,7 +946,7 @@
         if (savedNotes != null) notesEl.value = savedNotes;
       } catch {}
 
-      // show last local raw url in input (so Use last is visible)
+      // local url input
       try {
         const lastRaw = localStorage.getItem(LS.localLastUrlRaw) || "";
         if (lastRaw) localUrlInput.value = lastRaw;
@@ -702,7 +976,6 @@
         const tryLoad = () => {
           if (!ytReady) return false;
           if (!savedYtId) return true;
-
           ytPlayer.loadVideoById(savedYtId);
           setTimeout(() => {
             seekTo(savedTime);
@@ -718,17 +991,20 @@
           if (tryLoad() || tries > 80) clearInterval(timer);
         }, 100);
       } else {
-        // local: auto-load ONLY if URL mode had a saved raw URL
         setActive("local");
         document.querySelector('input[name="src"][value="local"]').checked = true;
 
+        // auto-load only URL mode
         let lastRaw = "";
         try { lastRaw = localStorage.getItem(LS.localLastUrlRaw) || ""; } catch {}
-        if (lastRaw) {
-          // auto-load silently; if fails, user can see error
-          loadLocalUrl(lastRaw, { autoResume: true });
-        }
+        if (lastRaw) loadLocalUrl(lastRaw, { autoResume: true });
       }
+
+      // vocab render + daily pick
+      renderVocab();
+      const w = pickTodayWord(false);
+      updateTodayUI(w);
+      refreshDailyVideos();
     }
 
     // Default
