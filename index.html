@@ -385,7 +385,7 @@
 
     // ---------- Keyboard ----------
     function handleEsc() {
-      if (isPlaying()) { seekTo(getCurrentTime() - 1); pause(); }
+      if (isPlaying()) { seekTo(getCurrentTime() - 2); pause(); }
       else { play(); }
     }
     function handleAltArrow(delta) { seekTo(getCurrentTime() + delta); }
