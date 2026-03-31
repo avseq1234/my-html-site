@@ -45,6 +45,16 @@
     }
     iframe { width: 100%; height: 100%; border: 0; }
     .dangerNote { background:#fff7ed; border:1px solid #fed7aa; color:#7c2d12; padding:10px; border-radius:10px; }
+    .srtNow {
+      margin-top: 10px;
+      min-height: 96px;
+      border: 1px solid #ddd;
+      border-radius: 10px;
+      padding: 12px;
+      background: #fafafa;
+      white-space: pre-wrap;
+      line-height: 1.6;
+    }
   </style>
 </head>
 
@@ -137,6 +147,12 @@
 
     <div class="card">
       <h3 style="margin-top:0;">逐字稿</h3>
+      <div class="row" style="margin-bottom:8px;">
+        <input id="srtInput" type="file" accept=".srt,text/plain" />
+        <button id="clearSrtBtn">Clear SRT</button>
+      </div>
+      <div id="srtStatus" class="hint subtle">尚未載入 SRT。</div>
+      <div id="srtCurrent" class="srtNow">載入 SRT 後，這裡會依照 YouTube 時間顯示字幕。</div>
       <textarea id="notes" placeholder="在這裡打逐字稿…"></textarea>
     </div>
   </div>
@@ -264,6 +280,10 @@
     const okBox = document.getElementById("okBox");
 
     const notesEl = document.getElementById("notes");
+    const srtInput = document.getElementById("srtInput");
+    const clearSrtBtn = document.getElementById("clearSrtBtn");
+    const srtStatus = document.getElementById("srtStatus");
+    const srtCurrent = document.getElementById("srtCurrent");
 
     const vocabInput = document.getElementById("vocabInput");
     const addVocabBtn = document.getElementById("addVocabBtn");
@@ -289,6 +309,99 @@
     let pendingLocalSeek = null;
     let currentLocalFingerprint = null;
     let currentLocalUrlEncoded = null;
+    let srtCues = [];
+    let activeCueIndex = -1;
+
+    // ---------- SRT ----------
+    function parseSrtTimestamp(ts) {
+      const m = String(ts || "").trim().match(/^(\d+):(\d{2}):(\d{2})[,.](\d{1,3})$/);
+      if (!m) return NaN;
+      const h = Number(m[1]) || 0;
+      const min = Number(m[2]) || 0;
+      const sec = Number(m[3]) || 0;
+      const ms = Number((m[4] || "0").padEnd(3, "0")) || 0;
+      return h * 3600 + min * 60 + sec + ms / 1000;
+    }
+
+    function parseSrt(text) {
+      const blocks = String(text || "").replace(/\r/g, "").trim().split(/\n{2,}/);
+      const cues = [];
+      blocks.forEach(block => {
+        const lines = block.split("\n").map(x => x.trim()).filter(Boolean);
+        if (!lines.length) return;
+
+        let i = 0;
+        if (/^\d+$/.test(lines[0])) i = 1;
+        if (!lines[i] || !lines[i].includes("-->")) return;
+
+        const pair = lines[i].split("-->");
+        if (pair.length < 2) return;
+        const start = parseSrtTimestamp(pair[0]);
+        const end = parseSrtTimestamp(pair[1].split(/\s+/)[0]);
+        if (!isFinite(start) || !isFinite(end) || end < start) return;
+
+        const cueText = lines.slice(i + 1).join("\n").trim();
+        if (!cueText) return;
+        cues.push({ start, end, text: cueText });
+      });
+
+      cues.sort((a, b) => a.start - b.start);
+      return cues;
+    }
+
+    function findCueIndexByTime(t) {
+      if (!srtCues.length) return -1;
+
+      if (activeCueIndex >= 0) {
+        const cur = srtCues[activeCueIndex];
+        if (t >= cur.start && t <= cur.end) return activeCueIndex;
+      }
+
+      let lo = 0, hi = srtCues.length - 1, ans = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (srtCues[mid].start <= t) { ans = mid; lo = mid + 1; }
+        else hi = mid - 1;
+      }
+      if (ans >= 0 && t <= srtCues[ans].end) return ans;
+      return -1;
+    }
+
+    function renderCueAtTime(t) {
+      if (!srtCues.length) return;
+      const idx = findCueIndexByTime(t);
+      if (idx === activeCueIndex) return;
+      activeCueIndex = idx;
+      srtCurrent.textContent = idx >= 0 ? srtCues[idx].text : "";
+    }
+
+    srtInput.addEventListener("change", async () => {
+      const f = srtInput.files && srtInput.files[0];
+      if (!f) return;
+      try {
+        const txt = await f.text();
+        const cues = parseSrt(txt);
+        srtCues = cues;
+        activeCueIndex = -1;
+        if (!cues.length) {
+          srtStatus.textContent = `解析失敗或檔案中沒有有效字幕：${f.name}`;
+          srtCurrent.textContent = "";
+          return;
+        }
+        srtStatus.textContent = `已載入 ${f.name}（${cues.length} 段）`;
+        renderCueAtTime(getCurrentTime());
+      } catch {
+        srtStatus.textContent = `讀取失敗：${f.name}`;
+      }
+    });
+
+    clearSrtBtn.addEventListener("click", () => {
+      srtCues = [];
+      activeCueIndex = -1;
+      srtInput.value = "";
+      srtStatus.textContent = "尚未載入 SRT。";
+      srtCurrent.textContent = "載入 SRT 後，這裡會依照 YouTube 時間顯示字幕。";
+    });
 
     // ---------- Toggle source ----------
     document.querySelectorAll('input[name="src"]').forEach(r => {
@@ -839,6 +952,7 @@
         const d = getDuration();
         if (isFinite(d) && d > 0 && d !== Infinity) lastKnownDuration = d;
         const dur = lastKnownDuration || 0;
+        if (active === "youtube" && srtCues.length) renderCueAtTime(getCurrentTime());
 
         if (dur > 0) {
           const t = getCurrentTime();
