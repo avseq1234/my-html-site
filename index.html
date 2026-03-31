@@ -324,7 +324,11 @@
     }
 
     function parseSrt(text) {
-      const blocks = String(text || "").replace(/\r/g, "").trim().split(/\n{2,}/);
+      const normalized = String(text || "")
+        .replace(/\u0000/g, "")
+        .replace(/^\uFEFF/, "")
+        .replace(/\r\n?/g, "\n");
+      const blocks = normalized.trim().split(/\n{2,}/);
       const cues = [];
       blocks.forEach(block => {
         const lines = block.split("\n").map(x => x.trim()).filter(Boolean);
@@ -332,12 +336,11 @@
 
         let i = 0;
         if (/^\d+$/.test(lines[0])) i = 1;
-        if (!lines[i] || !lines[i].includes("-->")) return;
-
-        const pair = lines[i].split("-->");
-        if (pair.length < 2) return;
-        const start = parseSrtTimestamp(pair[0]);
-        const end = parseSrtTimestamp(pair[1].split(/\s+/)[0]);
+        const timing = lines[i] || "";
+        const m = timing.match(/(\d+:\d{2}:\d{2}[,.]\d{1,3})\s*-->\s*(\d+:\d{2}:\d{2}[,.]\d{1,3})/);
+        if (!m) return;
+        const start = parseSrtTimestamp(m[1]);
+        const end = parseSrtTimestamp(m[2]);
         if (!isFinite(start) || !isFinite(end) || end < start) return;
 
         const cueText = lines.slice(i + 1).join("\n").trim();
