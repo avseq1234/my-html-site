@@ -955,7 +955,7 @@
         const d = getDuration();
         if (isFinite(d) && d > 0 && d !== Infinity) lastKnownDuration = d;
         const dur = lastKnownDuration || 0;
-        if (active === "youtube" && srtCues.length) renderCueAtTime(getCurrentTime());
+        if (srtCues.length) renderCueAtTime(getCurrentTime());
 
         if (dur > 0) {
           const t = getCurrentTime();
